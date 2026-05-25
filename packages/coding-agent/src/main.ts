@@ -14,6 +14,7 @@ import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { selectSession } from "./cli/session-picker.ts";
+import { handleThemesCommand } from "./cli/themes-command.ts";
 import { ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import {
@@ -437,6 +438,10 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
+	if (await handleThemesCommand(args)) {
+		return;
+	}
+
 	if (await handleConfigCommand(args)) {
 		return;
 	}
@@ -649,7 +654,11 @@ export async function main(args: string[], options?: MainOptions) {
 		stdinContent,
 	);
 	time("prepareInitialMessage");
-	initTheme(settingsManager.getTheme(), appMode === "interactive");
+	{
+		// Precedence: --theme <name> flag > PI_THEME env var > settings.json > default (editorial)
+		const themeOverride = parsed.themeName ?? process.env.PI_THEME ?? undefined;
+		initTheme(themeOverride ?? settingsManager.getTheme(), appMode === "interactive");
+	}
 	time("initTheme");
 
 	// Show deprecation warnings in interactive mode

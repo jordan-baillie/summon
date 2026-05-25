@@ -38,6 +38,7 @@ export interface Args {
 	promptTemplates?: string[];
 	noPromptTemplates?: boolean;
 	themes?: string[];
+	themeName?: string;
 	noThemes?: boolean;
 	noContextFiles?: boolean;
 	listModels?: string | true;
@@ -141,8 +142,21 @@ export function parseArgs(args: string[]): Args {
 			result.promptTemplates = result.promptTemplates ?? [];
 			result.promptTemplates.push(args[++i]);
 		} else if (arg === "--theme" && i + 1 < args.length) {
-			result.themes = result.themes ?? [];
-			result.themes.push(args[++i]);
+			const themeArg = args[++i];
+			// If the arg has no path separators or .json suffix, treat as a theme name selector.
+			// Otherwise treat as a path to register (legacy behavior).
+			const looksLikeName =
+				!themeArg.includes("/") &&
+				!themeArg.includes("\\") &&
+				!themeArg.endsWith(".json") &&
+				!themeArg.startsWith("~") &&
+				!themeArg.startsWith(".");
+			if (looksLikeName) {
+				result.themeName = themeArg; // last --theme <name> wins
+			} else {
+				result.themes = result.themes ?? [];
+				result.themes.push(themeArg);
+			}
 		} else if (arg === "--no-skills" || arg === "-ns") {
 			result.noSkills = true;
 		} else if (arg === "--no-prompt-templates" || arg === "-np") {
@@ -211,6 +225,8 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} update [source|self|pi]   Update pi and installed extensions
   ${APP_NAME} list                      List installed extensions from settings
   ${APP_NAME} config                    Open TUI to enable/disable package resources
+  ${APP_NAME} themes                    List all available themes with live previews
+  ${APP_NAME} themes <name>             Persist a theme to settings and exit
   ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list
 
 ${chalk.bold("Options:")}
@@ -240,7 +256,9 @@ ${chalk.bold("Options:")}
   --no-skills, -ns               Disable skills discovery and loading
   --prompt-template <path>       Load a prompt template file or directory (can be used multiple times)
   --no-prompt-templates, -np     Disable prompt template discovery and loading
-  --theme <path>                 Load a theme file or directory (can be used multiple times)
+  --theme <name|path>            Theme name to use (e.g. editorial, brutalist) or path to load.
+                                 Name selects for the session (overrides settings.json).
+                                 Path registers a custom theme file/dir. Can be used multiple times.
   --no-themes                    Disable theme discovery and loading
   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
   --export <file>                Export session file to HTML and exit
@@ -340,6 +358,8 @@ ${chalk.bold("Environment Variables:")}
   PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)
   PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes
   PI_TELEMETRY                     - Override install telemetry when set to 1/true/yes or 0/false/no
+  PI_THEME                         - Theme to use (e.g. PI_THEME=editorial). Overrides settings.json,
+                                     lower precedence than --theme flag.
   PI_SHARE_VIEWER_URL              - Base URL for /share command (default: https://pi.dev/session/)
 
 ${chalk.bold("Built-in Tool Names:")}

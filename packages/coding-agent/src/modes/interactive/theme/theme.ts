@@ -1002,7 +1002,9 @@ export function detectTerminalBackground(options: TerminalThemeDetectionOptions 
 }
 
 export function getDefaultTheme(): string {
-	return detectTerminalBackground().theme;
+	// Always default to editorial — dark-terminal users get the best experience out of the box.
+	// Light-terminal users should opt in via `pi themes light`.
+	return "editorial";
 }
 
 // ============================================================================
