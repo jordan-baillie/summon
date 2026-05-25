@@ -1,13 +1,19 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import { RoleHeaderComponent } from "./role-divider.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
 /**
- * Component that renders a complete assistant message
+ * Component that renders a complete assistant message.
+ *
+ * Branches on `theme.messageStyle()`:
+ *  - "fill"    (dark/light): current behavior — paddingX=1 Markdown, no header.
+ *  - "rule"    (editorial):  role-label + hr rule header, then the body.
+ *  - "bracket" (brutalist):  --[ pi ]-- header, then the body.
  */
 export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
@@ -81,6 +87,13 @@ export class AssistantMessageComponent extends Container {
 		);
 
 		if (hasVisibleContent) {
+			const style = theme.messageStyle();
+			if (style !== "fill") {
+				// ── Rule / Bracket: editorial + brutalist ────────────────────
+				// Role-label header line (CLAUDE ───── or --[ pi ]──)
+				this.contentContainer.addChild(new RoleHeaderComponent("assistant"));
+			}
+			// Leading blank line — acts as spacing above body for all styles
 			this.contentContainer.addChild(new Spacer(1));
 		}
 

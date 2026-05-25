@@ -9,7 +9,6 @@ import { theme } from "../theme/theme.ts";
  * Removes newlines, tabs, carriage returns, and other control characters.
  */
 function sanitizeStatusText(text: string): string {
-	// Replace newlines, tabs, carriage returns with space, then collapse multiple spaces
 	return text
 		.replace(/[\r\n\t]/g, " ")
 		.replace(/ +/g, " ")
@@ -43,7 +42,9 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
 
 /**
  * Footer component that shows pwd, token stats, and context usage.
- * Computes token/context stats from session, gets git branch and extension statuses from provider.
+ * Branches on theme.footerStyle():
+ *  - "two-line"   (dark/light): current pwd + stats layout (pixel-identical to pre-Phase-2).
+ *  - "single-line" (editorial/brutalist): compact one-line model  ctx%  tokens  $cost  cwd.
  */
 export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
@@ -63,18 +64,10 @@ export class FooterComponent implements Component {
 		this.autoCompactEnabled = enabled;
 	}
 
-	/**
-	 * No-op: git branch caching now handled by provider.
-	 * Kept for compatibility with existing call sites in interactive-mode.
-	 */
 	invalidate(): void {
 		// No-op: git branch is cached/invalidated by provider
 	}
 
-	/**
-	 * Clean up resources.
-	 * Git watcher cleanup now handled by provider.
-	 */
 	dispose(): void {
 		// Git watcher cleanup handled by provider
 	}
@@ -82,7 +75,7 @@ export class FooterComponent implements Component {
 	render(width: number): string[] {
 		const state = this.session.state;
 
-		// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
+		// Calculate cumulative usage from ALL session entries
 		let totalInput = 0;
 		let totalOutput = 0;
 		let totalCacheRead = 0;
@@ -99,43 +92,58 @@ export class FooterComponent implements Component {
 			}
 		}
 
-		// Calculate context usage from session (handles compaction correctly).
-		// After compaction, tokens are unknown until the next LLM response.
 		const contextUsage = this.session.getContextUsage();
 		const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
 		const contextPercentValue = contextUsage?.percent ?? 0;
 		const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
 
-		// Replace home directory with ~
 		let pwd = formatCwdForFooter(this.session.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE);
 
-		// Add git branch if available
 		const branch = this.footerData.getGitBranch();
 		if (branch) {
 			pwd = `${pwd} (${branch})`;
 		}
 
-		// Add session name if set
 		const sessionName = this.session.sessionManager.getSessionName();
 		if (sessionName) {
 			pwd = `${pwd} • ${sessionName}`;
 		}
 
-		// Build stats line
-		const statsParts = [];
+		const extensionStatuses = this.footerData.getExtensionStatuses();
+		const usingSubscription = state.model ? this.session.modelRegistry.isUsingOAuth(state.model) : false;
+
+		// ── Branch on footerStyle ────────────────────────────────────────────
+		if (theme.footerStyle() === "single-line") {
+			return this.renderSingleLine(
+				width,
+				state.model?.id ?? "no-model",
+				!!(state.model as any)?.reasoning,
+				(state as any).thinkingLevel as string | undefined,
+				totalInput,
+				totalOutput,
+				totalCost,
+				contextWindow,
+				contextPercentValue,
+				contextPercent,
+				usingSubscription,
+				pwd,
+				extensionStatuses,
+			);
+		}
+
+		// ── Two-line (legacy dark / light) ─────────────────────────────────
+
+		const statsParts: string[] = [];
 		if (totalInput) statsParts.push(`↑${formatTokens(totalInput)}`);
 		if (totalOutput) statsParts.push(`↓${formatTokens(totalOutput)}`);
 		if (totalCacheRead) statsParts.push(`R${formatTokens(totalCacheRead)}`);
 		if (totalCacheWrite) statsParts.push(`W${formatTokens(totalCacheWrite)}`);
 
-		// Show cost with "(sub)" indicator if using OAuth subscription
-		const usingSubscription = state.model ? this.session.modelRegistry.isUsingOAuth(state.model) : false;
 		if (totalCost || usingSubscription) {
 			const costStr = `$${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`;
 			statsParts.push(costStr);
 		}
 
-		// Colorize context percentage based on usage
 		let contextPercentStr: string;
 		const autoIndicator = this.autoCompactEnabled ? " (auto)" : "";
 		const contextPercentDisplay =
@@ -153,34 +161,27 @@ export class FooterComponent implements Component {
 
 		let statsLeft = statsParts.join(" ");
 
-		// Add model name on the right side, plus thinking level if model supports it
 		const modelName = state.model?.id || "no-model";
-
 		let statsLeftWidth = visibleWidth(statsLeft);
 
-		// If statsLeft is too wide, truncate it
 		if (statsLeftWidth > width) {
 			statsLeft = truncateToWidth(statsLeft, width, "...");
 			statsLeftWidth = visibleWidth(statsLeft);
 		}
 
-		// Calculate available space for padding (minimum 2 spaces between stats and model)
 		const minPadding = 2;
 
-		// Add thinking level indicator if model supports reasoning
 		let rightSideWithoutProvider = modelName;
 		if (state.model?.reasoning) {
-			const thinkingLevel = state.thinkingLevel || "off";
+			const thinkingLevel = (state as any).thinkingLevel || "off";
 			rightSideWithoutProvider =
 				thinkingLevel === "off" ? `${modelName} • thinking off` : `${modelName} • ${thinkingLevel}`;
 		}
 
-		// Prepend the provider in parentheses if there are multiple providers and there's enough room
 		let rightSide = rightSideWithoutProvider;
 		if (this.footerData.getAvailableProviderCount() > 1 && state.model) {
-			rightSide = `(${state.model!.provider}) ${rightSideWithoutProvider}`;
+			rightSide = `(${state.model.provider}) ${rightSideWithoutProvider}`;
 			if (statsLeftWidth + minPadding + visibleWidth(rightSide) > width) {
-				// Too wide, fall back
 				rightSide = rightSideWithoutProvider;
 			}
 		}
@@ -190,11 +191,9 @@ export class FooterComponent implements Component {
 
 		let statsLine: string;
 		if (totalNeeded <= width) {
-			// Both fit - add padding to right-align model
 			const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
 			statsLine = statsLeft + padding + rightSide;
 		} else {
-			// Need to truncate right side
 			const availableForRight = width - statsLeftWidth - minPadding;
 			if (availableForRight > 0) {
 				const truncatedRight = truncateToWidth(rightSide, availableForRight, "");
@@ -202,29 +201,122 @@ export class FooterComponent implements Component {
 				const padding = " ".repeat(Math.max(0, width - statsLeftWidth - truncatedRightWidth));
 				statsLine = statsLeft + padding + truncatedRight;
 			} else {
-				// Not enough space for right side at all
 				statsLine = statsLeft;
 			}
 		}
 
-		// Apply dim to each part separately. statsLeft may contain color codes (for context %)
-		// that end with a reset, which would clear an outer dim wrapper. So we dim the parts
-		// before and after the colored section independently.
 		const dimStatsLeft = theme.fg("dim", statsLeft);
-		const remainder = statsLine.slice(statsLeft.length); // padding + rightSide
+		const remainder = statsLine.slice(statsLeft.length);
 		const dimRemainder = theme.fg("dim", remainder);
 
 		const pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
 		const lines = [pwdLine, dimStatsLeft + dimRemainder];
 
-		// Add extension statuses on a single line, sorted by key alphabetically
-		const extensionStatuses = this.footerData.getExtensionStatuses();
 		if (extensionStatuses.size > 0) {
 			const sortedStatuses = Array.from(extensionStatuses.entries())
 				.sort(([a], [b]) => a.localeCompare(b))
 				.map(([, text]) => sanitizeStatusText(text));
 			const statusLine = sortedStatuses.join(" ");
-			// Truncate to terminal width with dim ellipsis for consistency with footer style
+			lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
+		}
+
+		return lines;
+	}
+
+	// ──────────────────────────────────────────────────────────────────────────
+	// Single-line footer (editorial / brutalist)
+	// ──────────────────────────────────────────────────────────────────────────
+
+	private renderSingleLine(
+		width: number,
+		modelId: string,
+		hasReasoning: boolean,
+		thinkingLevel: string | undefined,
+		totalInput: number,
+		totalOutput: number,
+		totalCost: number,
+		contextWindow: number,
+		contextPercentValue: number,
+		contextPercent: string,
+		usingSubscription: boolean,
+		pwd: string,
+		extensionStatuses: ReadonlyMap<string, string>,
+	): string[] {
+		const sep = theme.footerSeparator();
+		const ascii = theme.isAsciiOnly();
+		const autoIndicator = this.autoCompactEnabled ? " (auto)" : "";
+
+		// ── Group: model (NEVER dropped) ──────────────────────────────────
+		let modelPart = modelId;
+		if (hasReasoning) {
+			const level = thinkingLevel || "off";
+			modelPart = level === "off" ? `${modelId} thinking:off` : `${modelId} thinking:${level}`;
+		}
+
+		// ── Group: context% (NEVER dropped) ──────────────────────────────
+		const ctxDisplay =
+			contextPercent === "?"
+				? `?/${formatTokens(contextWindow)}${autoIndicator}`
+				: `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
+		let contextPart: string;
+		if (contextPercentValue > 90) {
+			contextPart = theme.fg("error", ctxDisplay);
+		} else if (contextPercentValue > 70) {
+			contextPart = theme.fg("warning", ctxDisplay);
+		} else {
+			contextPart = ctxDisplay;
+		}
+
+		// ── Group: tokens (optional — drop 2nd) ──────────────────────────
+		let tokensPart: string | null = null;
+		if (totalInput || totalOutput) {
+			tokensPart = ascii
+				? `in:${formatTokens(totalInput)} out:${formatTokens(totalOutput)}`
+				: `↑${formatTokens(totalInput)} ↓${formatTokens(totalOutput)}`;
+		}
+
+		// ── Group: cost (optional — drop 1st) ────────────────────────────
+		let costPart: string | null = null;
+		if (totalCost || usingSubscription) {
+			costPart = `$${totalCost.toFixed(3)}${usingSubscription ? "(sub)" : ""}`;
+		}
+
+		// ── Group: cwd (optional — drop 3rd/last) ────────────────────────
+		const cwdPart: string | null = pwd || null;
+
+		// ── Fit groups into width — drop order: cost, tokens, cwd ─────────
+		// Build a line from non-null parts joined by separator
+		const tryJoin = (parts: Array<string | null>): string => parts.filter((p): p is string => p !== null).join(sep);
+
+		const candidates: Array<Array<string | null>> = [
+			[modelPart, contextPart, tokensPart, costPart, cwdPart], // all
+			[modelPart, contextPart, tokensPart, null, cwdPart], // drop cost
+			[modelPart, contextPart, null, null, cwdPart], // drop cost + tokens
+			[modelPart, contextPart, null, null, null], // drop cost + tokens + cwd
+		];
+
+		let result = tryJoin(candidates[0]);
+		for (const candidate of candidates) {
+			const joined = tryJoin(candidate);
+			if (visibleWidth(joined) <= width) {
+				result = joined;
+				break;
+			}
+		}
+
+		// Last-resort truncation
+		if (visibleWidth(result) > width) {
+			result = truncateToWidth(result, width, theme.fg("dim", "..."));
+		}
+
+		const lines: string[] = [theme.fg("dim", result)];
+
+		// Extension statuses on a second line (if present)
+		if (extensionStatuses.size > 0) {
+			const sortedStatuses = Array.from(extensionStatuses.entries())
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([, text]) => sanitizeStatusText(text));
+			const statusLine = sortedStatuses.join(" ");
 			lines.push(truncateToWidth(statusLine, width, theme.fg("dim", "...")));
 		}
 

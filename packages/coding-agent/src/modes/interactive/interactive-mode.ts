@@ -258,9 +258,15 @@ export class InteractiveMode {
 	private workingMessage: string | undefined = undefined;
 	private workingVisible = true;
 	private workingIndicatorOptions: LoaderIndicatorOptions | undefined = undefined;
-	private readonly defaultWorkingMessage = "Working...";
-	private readonly defaultHiddenThinkingLabel = "Thinking...";
-	private hiddenThinkingLabel = this.defaultHiddenThinkingLabel;
+	private get defaultWorkingMessage(): string {
+		// Reads from theme so editorial → "thinking", dark/light → "Working..."
+		return theme.glyph("workingLabel");
+	}
+	private get defaultHiddenThinkingLabel(): string {
+		// Same source for consistency — editorial sets workingLabel to "thinking"
+		return theme.glyph("workingLabel");
+	}
+	private hiddenThinkingLabel = "Thinking..."; // updated by setHiddenThinkingLabel + defaultHiddenThinkingLabel getter
 
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
@@ -1688,12 +1694,18 @@ export class InteractiveMode {
 	}
 
 	private createWorkingLoader(): Loader {
+		const indicator = this.workingIndicatorOptions ?? {
+			frames: theme.spinnerFrames(),
+			intervalMs: theme.spinnerIntervalMs(),
+		};
+		// For rule/bracket styles, match spinner color to muted text (not accent)
+		const spinnerColor = theme.messageStyle() === "fill" ? ("accent" as const) : ("muted" as const);
 		return new Loader(
 			this.ui,
-			(spinner) => theme.fg("accent", spinner),
+			(spinner) => theme.fg(spinnerColor, spinner),
 			(text) => theme.fg("muted", text),
 			this.getWorkingLoaderMessage(),
-			this.workingIndicatorOptions,
+			indicator,
 		);
 	}
 

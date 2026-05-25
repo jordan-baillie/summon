@@ -20,6 +20,8 @@ export class DynamicBorder implements Component {
 	}
 
 	render(width: number): string[] {
-		return [this.color("─".repeat(Math.max(1, width)))];
+		// Use theme glyph for hr — falls back to "─" defensively
+		const hrChar = theme.glyph("hr") || "─";
+		return [this.color(hrChar.repeat(Math.max(1, width)))];
 	}
 }
