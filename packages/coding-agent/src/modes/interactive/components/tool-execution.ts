@@ -1,4 +1,14 @@
-import { Box, type Component, Container, getCapabilities, Image, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import {
+	Box,
+	type Component,
+	Container,
+	getCapabilities,
+	Image,
+	Spacer,
+	Text,
+	type TUI,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import type { ToolDefinition, ToolRenderContext } from "../../../core/extensions/types.ts";
 import { createAllToolDefinitions, type ToolName } from "../../../core/tools/index.ts";
 import { getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
@@ -148,11 +158,10 @@ class AsciiBoxFrame implements Component {
 
 		const lines: string[] = [topBorder];
 		for (const line of bodyLines) {
-			// Strip trailing spaces then pad to bodyWidth for aligned right pipe
+			// Strip trailing spaces then pad to bodyWidth using visibleWidth (handles all ANSI codes)
 			const stripped = line.replace(/\s+$/, "");
-			const ansiStripped = stripped.replace(/\x1b\[[0-9;]*m/g, "");
-			const padCount = Math.max(0, bodyWidth - ansiStripped.length);
-			lines.push(theme.fg("muted", "| ") + stripped + " ".repeat(padCount) + theme.fg("muted", " |"));
+			const padCount = Math.max(0, bodyWidth - visibleWidth(stripped));
+			lines.push(`${theme.fg("muted", "| ")}${stripped}${" ".repeat(padCount)}${theme.fg("muted", " |")}`);
 		}
 		lines.push(bottomBorder);
 		return lines;
