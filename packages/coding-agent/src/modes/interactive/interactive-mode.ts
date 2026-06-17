@@ -398,9 +398,11 @@ export class InteractiveMode {
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 
-		// Register themes from resource loader and initialize
+		// Register themes from resource loader and initialize.
+		// Honor a PI_THEME / --theme override (main.ts unifies the flag into PI_THEME) so an explicitly
+		// selected theme is NOT clobbered back to the settings.json default when interactive mode starts.
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
-		initTheme(this.settingsManager.getTheme(), true);
+		initTheme(process.env.PI_THEME ?? this.settingsManager.getTheme(), true);
 	}
 
 	private getAutocompleteSourceTag(sourceInfo?: SourceInfo): string | undefined {

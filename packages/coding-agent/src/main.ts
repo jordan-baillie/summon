@@ -263,7 +263,7 @@ async function createSessionManager(
 	}
 
 	if (parsed.resume) {
-		initTheme(settingsManager.getTheme(), true);
+		initTheme(process.env.PI_THEME ?? settingsManager.getTheme(), true);
 		try {
 			const selectedPath = await selectSession(
 				(onProgress) => SessionManager.list(cwd, sessionDir, onProgress),
@@ -388,7 +388,7 @@ async function promptForMissingSessionCwd(
 	issue: SessionCwdIssue,
 	settingsManager: SettingsManager,
 ): Promise<string | undefined> {
-	initTheme(settingsManager.getTheme());
+	initTheme(process.env.PI_THEME ?? settingsManager.getTheme());
 	setKeybindings(KeybindingsManager.create());
 
 	return new Promise((resolve) => {
@@ -657,6 +657,9 @@ export async function main(args: string[], options?: MainOptions) {
 	{
 		// Precedence: --theme <name> flag > PI_THEME env var > settings.json > default (editorial)
 		const themeOverride = parsed.themeName ?? process.env.PI_THEME ?? undefined;
+		// Unify the flag into PI_THEME so later re-inits (interactive mode, resume, config selector)
+		// honor the same override instead of falling back to the settings.json default.
+		if (themeOverride) process.env.PI_THEME = themeOverride;
 		initTheme(themeOverride ?? settingsManager.getTheme(), appMode === "interactive");
 	}
 	time("initTheme");
