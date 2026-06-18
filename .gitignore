@@ -39,3 +39,6 @@ plans/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
+
+# Personal aurora config (system/append prompts, sessions) - not for the public repo
+.aurora/
