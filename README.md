@@ -39,6 +39,11 @@ aurora              # start
 
 Requires **Node ≥ 22**. Config lives in `~/.aurora/`. Your normal tooling is untouched.
 
+The build is **hermetic and reproducible** — the model catalog
+(`packages/ai/src/*.generated.ts`) is committed, so `npm run build` needs no network
+and always produces the same output. Maintainers refresh the catalog deliberately with
+`npm run refresh-models` (fetches the latest from models.dev), then review and commit the diff.
+
 ## What you get
 
 - **The agent** — `aurora`: read / bash / edit / write tools, sessions, a polished interactive TUI.
