@@ -2,7 +2,7 @@
  * Shared test utilities for coding-agent tests.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Agent } from "@summon/agent-core";
@@ -24,6 +24,42 @@ import { createCodingTools } from "../src/index.ts";
  * describe.skipIf(!API_KEY)
  */
 export const API_KEY = process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
+
+let _chmodDeniesAccessCache: boolean | undefined;
+/**
+ * Whether the filesystem actually enforces permission denial after `chmod`. Returns false
+ * when running as root (uid 0 bypasses DAC), on Windows (chmod is largely a no-op), or on
+ * filesystems/containers where permissions are not enforced (e.g. CAP_DAC_OVERRIDE). Probes
+ * empirically rather than guessing from platform/uid, so tests that depend on EACCES/permission
+ * errors run exactly where the precondition can hold. Use with `it.skipIf(!chmodDeniesAccess())`.
+ */
+export function chmodDeniesAccess(): boolean {
+	if (_chmodDeniesAccessCache !== undefined) return _chmodDeniesAccessCache;
+	const dir = mkdtempSync(join(tmpdir(), "perm-probe-"));
+	const probe = join(dir, "f");
+	let denies = false;
+	try {
+		writeFileSync(probe, "x");
+		chmodSync(probe, 0o000);
+		try {
+			readFileSync(probe);
+			denies = false; // still readable ⇒ chmod not enforced here
+		} catch {
+			denies = true;
+		}
+	} catch {
+		denies = false;
+	} finally {
+		try {
+			chmodSync(probe, 0o600);
+		} catch {}
+		try {
+			rmSync(dir, { recursive: true, force: true });
+		} catch {}
+	}
+	_chmodDeniesAccessCache = denies;
+	return denies;
+}
 
 // ============================================================================
 // OAuth API key resolution from ~/.summon/agent/auth.json

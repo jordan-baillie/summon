@@ -111,6 +111,12 @@ interface PackageManagerOptions {
 	cwd: string;
 	agentDir: string;
 	settingsManager: SettingsManager;
+	/**
+	 * Directory of app-bundled builtin extensions to auto-discover. Defaults to
+	 * {@link getBuiltinExtensionsDir}. Pass `null` to disable builtin discovery entirely
+	 * (used by tests that assert on user/project resolution in isolation).
+	 */
+	builtinExtensionsDir?: string | null;
 }
 
 type SourceScope = "user" | "project" | "temporary";
@@ -758,6 +764,7 @@ export class DefaultPackageManager implements PackageManager {
 	private cwd: string;
 	private agentDir: string;
 	private settingsManager: SettingsManager;
+	private builtinExtensionsDir: string | null;
 	private globalNpmRoot: string | undefined;
 	private globalNpmRootCommandKey: string | undefined;
 	private progressCallback: ProgressCallback | undefined;
@@ -766,6 +773,8 @@ export class DefaultPackageManager implements PackageManager {
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
 		this.settingsManager = options.settingsManager;
+		this.builtinExtensionsDir =
+			options.builtinExtensionsDir === undefined ? getBuiltinExtensionsDir() : options.builtinExtensionsDir;
 	}
 
 	setProgressCallback(callback: ProgressCallback | undefined): void {
@@ -2317,13 +2326,16 @@ export class DefaultPackageManager implements PackageManager {
 
 		// Built-in extensions bundled WITH the app (e.g. the Summon harness). Auto-loaded with zero
 		// setup. Lowest precedence: a user/project extension of the same name wins. Toggle via settings.
-		addResources(
-			"extensions",
-			collectAutoExtensionEntries(getBuiltinExtensionsDir()),
-			userMetadata,
-			userOverrides.extensions,
-			globalBaseDir,
-		);
+		// `builtinExtensionsDir: null` (tests) disables this discovery entirely for isolation.
+		if (this.builtinExtensionsDir) {
+			addResources(
+				"extensions",
+				collectAutoExtensionEntries(this.builtinExtensionsDir),
+				userMetadata,
+				userOverrides.extensions,
+				globalBaseDir,
+			);
+		}
 
 		// User skills from ~/.summon/agent/
 		addResources(

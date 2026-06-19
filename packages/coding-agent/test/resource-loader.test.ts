@@ -175,7 +175,7 @@ Project skill`,
 			symlinkSync(sharedExtDir, join(agentDir, "extensions"), "dir");
 			symlinkSync(sharedExtDir, join(cwd, ".summon", "extensions"), "dir");
 
-			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			const loader = new DefaultResourceLoader({ cwd, agentDir, builtinExtensionsDir: null });
 			await loader.reload();
 
 			const extensionsResult = loader.getExtensions();
@@ -221,7 +221,7 @@ Project skill`,
 }`,
 			);
 
-			const loader = new DefaultResourceLoader({ cwd, agentDir });
+			const loader = new DefaultResourceLoader({ cwd, agentDir, builtinExtensionsDir: null });
 			await loader.reload();
 
 			const extensionsResult = loader.getExtensions();

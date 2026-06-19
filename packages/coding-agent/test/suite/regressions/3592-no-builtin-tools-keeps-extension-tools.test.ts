@@ -36,6 +36,9 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 			cwd: tempDir,
 			agentDir,
 			settingsManager,
+			// Isolate from app-bundled builtin extensions (e.g. the harness) so this test asserts
+			// purely on the noTools semantics for its own dynamic_tool extension.
+			builtinExtensionsDir: null,
 			extensionFactories: [
 				(pi) => {
 					pi.on("session_start", () => {
@@ -102,6 +105,7 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 			cwd: tempDir,
 			agentDir,
 			settingsManager,
+			resourceLoaderOptions: { builtinExtensionsDir: null },
 		});
 
 		const { session } = await createAgentSessionFromServices({

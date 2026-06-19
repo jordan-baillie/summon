@@ -289,6 +289,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 				(InteractiveMode as any).prototype.getCompactExtensionLabels.call(fakeThis, extensions),
 			formatDiagnostics: () => "diagnostics",
 			getBuiltInCommandConflictDiagnostics: () => [],
+			// Pinned for determinism: these tests assert the non-branded loaded-resource listing,
+			// independent of the active theme's wordmark or terminal width. (showLoadedResources
+			// calls this.isBrandedStartup(); the mock must provide every method the source touches.)
+			isBrandedStartup: () => false,
 		};
 
 		if (options.useRealScopeGroups) {

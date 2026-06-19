@@ -72,6 +72,9 @@ describe("DefaultPackageManager", () => {
 			cwd: tempDir,
 			agentDir,
 			settingsManager,
+			// Isolate from app-bundled builtin extensions so these tests assert purely on
+			// user/project resolution (immune to future builtin additions).
+			builtinExtensionsDir: null,
 		});
 	});
 
