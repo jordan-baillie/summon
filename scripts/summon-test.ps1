@@ -1,6 +1,8 @@
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Repo root is the parent of scripts/
+$repoRoot = Split-Path -Parent $scriptDir
 $noEnv = $false
 $forwardArgs = New-Object System.Collections.Generic.List[string]
 
@@ -58,12 +60,12 @@ if ($noEnv) {
 	Write-Host "Running without API keys..."
 }
 
-$tsxBin = Join-Path $scriptDir "node_modules/.bin/tsx.cmd"
+$tsxBin = Join-Path $repoRoot "node_modules/.bin/tsx.cmd"
 if (-not (Test-Path -LiteralPath $tsxBin)) {
 	throw "tsx not found at $tsxBin. Run npm install from the repo root first."
 }
 
-$cliPath = Join-Path $scriptDir "packages/coding-agent/src/cli.ts"
+$cliPath = Join-Path $repoRoot "packages/coding-agent/src/cli.ts"
 & $tsxBin $cliPath @forwardArgs
 $exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {

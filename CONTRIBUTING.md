@@ -53,7 +53,7 @@ Before submitting a PR:
 
 ```bash
 npm run check
-./test.sh
+./scripts/test.sh
 ```
 
 Both must pass.

@@ -14,7 +14,7 @@ npm run build
 Run from source:
 
 ```bash
-/path/to/summon/summon-test.sh
+/path/to/summon/scripts/summon-test.sh
 ```
 
 The script can be run from any directory. Summon keeps the caller's current working directory.
@@ -55,7 +55,7 @@ Never use `__dirname` directly for package assets.
 ## Testing
 
 ```bash
-./test.sh                         # Run non-LLM tests (no API keys needed)
+./scripts/test.sh                 # Run non-LLM tests (no API keys needed)
 npm test                          # Run all tests
 npm test -- test/specific.test.ts # Run specific test
 ```
