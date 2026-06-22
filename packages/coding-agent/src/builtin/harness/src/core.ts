@@ -739,6 +739,14 @@ export const WORKER_SEAL_FLAGS = [
 	"--no-context-files",
 ] as const;
 
+// Per-tier worker model. Defaults to the Anthropic MODEL map, but SUMMON_WORKER_MODEL_{FAST,STANDARD,
+// FRONTIER} (any summon model pattern, e.g. "openrouter/anthropic/claude-haiku-4.5") overrides it — so
+// the harness fan-out can run on whatever provider the operator has, not just Anthropic. Read from the
+// spawn env (not raw process.env) so the two transports stay in lockstep and tests can inject it.
+export function workerModel(tier: AgentBundle["model_tier"], env: NodeJS.ProcessEnv = process.env): string {
+	return env[`SUMMON_WORKER_MODEL_${tier.toUpperCase()}`] || MODEL[tier];
+}
+
 // Build the full argv tail shared by every worker transport. `head` carries the
 // mode-specific prefix (e.g. ["-p","--no-session","--mode","json"] for one-shot,
 // ["--mode","rpc","--no-session"] for the pooled rpc worker). The model, system
@@ -748,7 +756,7 @@ export function buildWorkerArgs(bundle: AgentBundle, head: string[], env: NodeJS
 	const args = [
 		...head,
 		"--model",
-		MODEL[bundle.model_tier],
+		workerModel(bundle.model_tier, env),
 		"--system-prompt",
 		buildSystemPrompt(bundle),
 		"--tools",
