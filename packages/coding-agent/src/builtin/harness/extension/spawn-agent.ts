@@ -51,6 +51,7 @@ import {
 	setPoolTarget,
 	spawnViaPool,
 } from "../src/pool-transport.ts";
+import { buildBlueprintReport, buildQuorumReport, GovernorTrace, writeRunReport } from "../src/run-report.ts";
 import { blueprintResume, listResumableRuns, makeRunId, runEventsPath, runMeta } from "../src/runstore.ts";
 import { resolveScaleMode, scaleLabel, scaleParams } from "../src/scale.ts";
 import { deriveState, RunSession, readEvents } from "../src/session.ts";
@@ -93,6 +94,10 @@ export default function harness(summon: ExtensionAPI) {
 	// Durable run sessions (Phase 2/3): journal every blueprint/team/fan-out run to an append-only log so
 	// a crashed or human-paused run is discoverable + resumable. HARNESS_DURABLE=0 opts out (journaling off).
 	const DURABLE = process.env.HARNESS_DURABLE !== "0";
+	// Per-run decision-trace artifact (report.json beside the run's events.jsonl). Opt-in, default OFF;
+	// additive — the trace subscription and report write are skipped entirely when unset, so the run hot
+	// path is byte-identical. Rides the durable run identity, so it is a no-op when DURABLE is off.
+	const RUN_REPORT = process.env.HARNESS_RUN_REPORT === "1";
 	// Best-of-N cap (#6) and auto-planner caps (#5). All optional; safe defaults.
 	const QUORUM_MAX = Math.max(2, Number(process.env.HARNESS_QUORUM_MAX ?? 3));
 	const PLAN_MAX_NODES = Math.max(1, Number(process.env.HARNESS_PLAN_MAX_NODES ?? 24));
@@ -519,57 +524,81 @@ export default function harness(summon: ExtensionAPI) {
 			const N = Math.min(QUORUM_MAX, Math.max(2, p.n ?? 3));
 			const judgeAgent = p.judge ?? "reviewer";
 			const { session, runId } = startRun("fanout", "spawn_quorum", { agent: p.agent, n: N }, ctx);
-			const candidates = Array.from(
-				{ length: N },
-				(_v, i) => () =>
-					runOne(
-						p.agent,
-						`${p.prompt}\n\n## VARIANT SEED ${i}\nExplore an independent approach; do not assume other attempts exist.`,
-						`${taskId}#${i}`,
-						ctx,
-						p.verify,
-					),
-			);
-			const judge = async (survivors: { artifact_excerpt?: string }[]) => {
-				if (!registry.has(judgeAgent))
-					return {
-						agent: judgeAgent,
-						status: "failed" as const,
-						artifact_excerpt: "",
-						contract: { passed: false, missing: [] },
-						meta: { model: "", elapsed_s: 0, bytes: 0 },
-					};
-				return runOne(judgeAgent, quorumPrompt(p.prompt, survivors), `${taskId}-judge`, ctx);
-			};
-			const outcome = await runQuorum(candidates, judge, { maxN: N });
-			// Surface the verdict on the live dashboard bus (Bet 1) — not only the durable journal below.
-			summon.events?.emit?.("agent-event", {
-				t: "quorum",
-				id: taskId,
-				agent: p.agent,
-				agreement: outcome.agreement,
-				decidedBy: outcome.decidedBy,
-				groupSize: outcome.groupSize,
-				survivors: outcome.survivors.length,
-				candidates: N,
-				won: !!outcome.winner,
-				ts: Date.now(),
-			});
-			if (session) {
-				session.append("quorum_decided", {
-					node: taskId,
+			const trace = RUN_REPORT && session && runId ? new GovernorTrace() : null;
+			const startedAt = Date.now();
+			trace?.subscribe(summon.events);
+			try {
+				const candidates = Array.from(
+					{ length: N },
+					(_v, i) => () =>
+						runOne(
+							p.agent,
+							`${p.prompt}\n\n## VARIANT SEED ${i}\nExplore an independent approach; do not assume other attempts exist.`,
+							`${taskId}#${i}`,
+							ctx,
+							p.verify,
+						),
+				);
+				const judge = async (survivors: { artifact_excerpt?: string }[]) => {
+					if (!registry.has(judgeAgent))
+						return {
+							agent: judgeAgent,
+							status: "failed" as const,
+							artifact_excerpt: "",
+							contract: { passed: false, missing: [] },
+							meta: { model: "", elapsed_s: 0, bytes: 0 },
+						};
+					return runOne(judgeAgent, quorumPrompt(p.prompt, survivors), `${taskId}-judge`, ctx);
+				};
+				const outcome = await runQuorum(candidates, judge, { maxN: N });
+				// Surface the verdict on the live dashboard bus (Bet 1) — not only the durable journal below.
+				summon.events?.emit?.("agent-event", {
+					t: "quorum",
+					id: taskId,
+					agent: p.agent,
 					agreement: outcome.agreement,
 					decidedBy: outcome.decidedBy,
+					groupSize: outcome.groupSize,
 					survivors: outcome.survivors.length,
 					candidates: N,
-					groupSize: outcome.groupSize ?? null,
+					won: !!outcome.winner,
+					ts: Date.now(),
 				});
-				session.append("run_finished", { status: outcome.winner ? "done" : "failed" });
+				if (session) {
+					session.append("quorum_decided", {
+						node: taskId,
+						agreement: outcome.agreement,
+						decidedBy: outcome.decidedBy,
+						survivors: outcome.survivors.length,
+						candidates: N,
+						groupSize: outcome.groupSize ?? null,
+					});
+					session.append("run_finished", { status: outcome.winner ? "done" : "failed" });
+				}
+				if (trace && runId) {
+					try {
+						const report = buildQuorumReport({
+							runId,
+							name: "spawn_quorum",
+							agent: p.agent,
+							prompt: p.prompt,
+							outcome,
+							governor: trace.snapshot(),
+							startedAt,
+							finishedAt: Date.now(),
+						});
+						writeRunReport(RUNS_DIR, runId, report);
+					} catch {
+						/* report is observability-only — never fail the run */
+					}
+				}
+				const text = outcome.winner
+					? `${fmt(outcome.winner)}\n\n=== QUORUM: ${outcome.agreement} via ${outcome.decidedBy} (${outcome.survivors.length}/${N} survived) ===`
+					: `quorum failed — 0/${N} candidates passed verify+contract`;
+				return { content: [{ type: "text", text }], details: { ...outcome, runId }, isError: !outcome.winner };
+			} finally {
+				trace?.stop();
 			}
-			const text = outcome.winner
-				? `${fmt(outcome.winner)}\n\n=== QUORUM: ${outcome.agreement} via ${outcome.decidedBy} (${outcome.survivors.length}/${N} survived) ===`
-				: `quorum failed — 0/${N} candidates passed verify+contract`;
-			return { content: [{ type: "text", text }], details: { ...outcome, runId }, isError: !outcome.winner };
 		},
 	});
 
@@ -682,20 +711,48 @@ export default function harness(summon: ExtensionAPI) {
 		ctx: any,
 		session: RunSession | null,
 		resume?: ReturnType<typeof blueprintResume>,
+		runId?: string | null,
 	): Promise<BlueprintOutcome> {
-		const outcome = await runBlueprint(bp, vars, blueprintExec(ctx), {
-			journal: journalOf(session),
-			resume: resume
-				? { done: resume.done, failedOrSkipped: resume.failedOrSkipped, output: resume.output }
-				: undefined,
-			isApproved: resume ? (n: BlueprintNode) => resume.approved.has(n.id) : undefined,
-		});
-		// runBlueprint journals run_finished:paused itself; the caller owns the terminal done/failed mark.
-		if (session && !outcome.paused) {
-			const failed = outcome.nodes.some((n) => n.status === "failed" || n.status === "skipped");
-			session.append("run_finished", { status: failed ? "failed" : "done" });
+		// Capture the governor time-series for the whole run when the report is on. Subscribe BEFORE the run
+		// so no event is missed; the bus handle is held and stopped in the finally so a listener never leaks.
+		const trace = RUN_REPORT && session && runId ? new GovernorTrace() : null;
+		const startedAt = Date.now();
+		trace?.subscribe(summon.events);
+		try {
+			const outcome = await runBlueprint(bp, vars, blueprintExec(ctx), {
+				journal: journalOf(session),
+				resume: resume
+					? { done: resume.done, failedOrSkipped: resume.failedOrSkipped, output: resume.output }
+					: undefined,
+				isApproved: resume ? (n: BlueprintNode) => resume.approved.has(n.id) : undefined,
+			});
+			// runBlueprint journals run_finished:paused itself; the caller owns the terminal done/failed mark.
+			if (session && !outcome.paused) {
+				const failed = outcome.nodes.some((n) => n.status === "failed" || n.status === "skipped");
+				session.append("run_finished", { status: failed ? "failed" : "done" });
+			}
+			// Assemble + flush the report at the terminal seam (skip a paused run — it emits on the resume's
+			// terminal mark). Best-effort: a write failure must never propagate into the run result.
+			if (trace && runId && !outcome.paused) {
+				try {
+					const report = buildBlueprintReport({
+						runId,
+						name: bp.name,
+						bp,
+						outcome,
+						governor: trace.snapshot(),
+						startedAt,
+						finishedAt: Date.now(),
+					});
+					writeRunReport(RUNS_DIR, runId, report);
+				} catch {
+					/* report is observability-only — never fail the run */
+				}
+			}
+			return outcome;
+		} finally {
+			trace?.stop();
 		}
-		return outcome;
 	}
 
 	function renderBlueprint(outcome: BlueprintOutcome, runId: string | null): string {
@@ -742,7 +799,7 @@ export default function harness(summon: ExtensionAPI) {
 			const bp =
 				meta.generated && meta.blueprint ? meta.blueprint : loadBlueprints(registry, process.cwd()).get(meta.name);
 			if (!bp) return { text: `blueprint '${meta.name}' no longer exists`, isError: true };
-			const outcome = await executeBlueprint(bp, meta.vars ?? {}, ctx, session, blueprintResume(events));
+			const outcome = await executeBlueprint(bp, meta.vars ?? {}, ctx, session, blueprintResume(events), runId);
 			const failed = outcome.nodes.some((n) => n.status === "failed" || n.status === "skipped");
 			return { text: renderBlueprint(outcome, runId), outcome, isError: failed && !outcome.paused };
 		}
@@ -792,7 +849,7 @@ export default function harness(summon: ExtensionAPI) {
 			try {
 				// Durable session: journal the run so a crash or approval-pause is discoverable + resumable.
 				const { session, runId } = startRun("blueprint", p.blueprint, { vars: p.vars ?? {} }, ctx);
-				const outcome = await executeBlueprint(bp, p.vars ?? {}, ctx, session);
+				const outcome = await executeBlueprint(bp, p.vars ?? {}, ctx, session, undefined, runId);
 				const failed = outcome.nodes.some((n) => n.status === "failed" || n.status === "skipped");
 				return {
 					content: [{ type: "text", text: renderBlueprint(outcome, runId) }],
@@ -921,7 +978,7 @@ export default function harness(summon: ExtensionAPI) {
 			{ vars: vars ?? {}, generated: true, blueprint: bp },
 			ctx,
 		);
-		const outcome = await executeBlueprint(bp, vars ?? {}, ctx, session);
+		const outcome = await executeBlueprint(bp, vars ?? {}, ctx, session, undefined, runId);
 		const failed = outcome.nodes.some((n) => n.status === "failed" || n.status === "skipped");
 		return {
 			content: [{ type: "text" as const, text: renderBlueprint(outcome, runId) }],

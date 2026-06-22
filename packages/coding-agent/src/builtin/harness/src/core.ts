@@ -524,7 +524,11 @@ export interface SpawnResult {
 	contract: { passed: boolean; missing: string[] };
 	verify?: { cmd: string; passed: boolean; output: string };
 	cached?: "cache" | "inflight"; // set when this result was served from the within-run result cache (#5)
-	meta: { model: string; elapsed_s: number; bytes: number };
+	// tier is the EFFECTIVE model_tier of the bundle that actually ran (a shed/downshifted clone when the
+	// governor load-sheds), captured at spawn so cost attribution survives both shedding AND a
+	// SUMMON_WORKER_MODEL_<TIER> override (which would defeat reverse-mapping model→tier). Optional only
+	// because the pure quorum/judge error sentinels build a result with no bundle in hand (zero-byte, no tier).
+	meta: { model: string; tier?: AgentBundle["model_tier"]; elapsed_s: number; bytes: number };
 }
 
 // ── retry combinator (pure + injectable — no subprocess knowledge) ─────────────
@@ -716,7 +720,7 @@ export function finalizeResult(
 		artifact_excerpt: text.slice(0, 1500),
 		contract,
 		verify,
-		meta: { model, elapsed_s: (Date.now() - t0) / 1000, bytes: text.length },
+		meta: { model, tier: bundle.model_tier, elapsed_s: (Date.now() - t0) / 1000, bytes: text.length },
 	};
 }
 
