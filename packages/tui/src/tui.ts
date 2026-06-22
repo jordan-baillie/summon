@@ -257,6 +257,16 @@ export class TUI extends Container {
 	private clearOnShrink = process.env.SUMMON_CLEAR_ON_SHRINK === "1"; // Clear empty rows when content shrinks (default: off)
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
+	// Per-line normalization memo (see applyLineResets). normalizeTerminalOutput()+reset is a PURE
+	// function of the raw line, so we cache last frame's raw lines and their normalized output and
+	// reuse the SAME normalized string instance for any line whose raw text is unchanged. This turns
+	// the per-frame normalization from O(total scrollback lines) into O(changed lines), and — because
+	// unchanged lines keep a stable string instance — also collapses the doRender diff loop's compares
+	// to O(1) reference-equality for unchanged lines. Without it, a long session (high context %)
+	// re-normalizes + re-allocates every scrollback line on every spinner tick/keystroke, saturating
+	// the event loop and making typing, animations, and timers visibly lag.
+	private normCacheRaw: string[] = [];
+	private normCacheOut: string[] = [];
 	private fullRedrawCount = 0;
 	private stopped = false;
 
@@ -834,13 +844,29 @@ export class TUI extends Container {
 
 	private applyLineResets(lines: string[]): string[] {
 		const reset = TUI.SEGMENT_RESET;
-		for (let i = 0; i < lines.length; i++) {
+		const prevRaw = this.normCacheRaw;
+		const prevOut = this.normCacheOut;
+		const prevLen = prevRaw.length;
+		const n = lines.length;
+		const out: string[] = new Array(n);
+		const rawSnapshot: string[] = new Array(n);
+		for (let i = 0; i < n; i++) {
 			const line = lines[i];
-			if (!isImageLine(line)) {
-				lines[i] = normalizeTerminalOutput(line) + reset;
+			rawSnapshot[i] = line;
+			// Reuse last frame's normalized output when this line's raw text is unchanged. The common
+			// case is reference equality (cached child components return stable string instances), which
+			// short-circuits before any value comparison.
+			if (i < prevLen && prevRaw[i] === line) {
+				out[i] = prevOut[i];
+				continue;
 			}
+			out[i] = isImageLine(line) ? line : normalizeTerminalOutput(line) + reset;
 		}
-		return lines;
+		// The cache is self-consistent (rawSnapshot[i] always maps to out[i] from THIS frame), so it is
+		// independent of the many previousLines assignment sites in doRender and is always correct.
+		this.normCacheRaw = rawSnapshot;
+		this.normCacheOut = out;
+		return out;
 	}
 
 	private collectKittyImageIds(lines: string[]): Set<number> {
