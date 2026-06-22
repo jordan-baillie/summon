@@ -1,0 +1,20 @@
+# B2 deterministic autoscaler-decision guard — 2026-06-22
+# repro: node --experimental-strip-types bench/autoscale-bench.ts
+
+B2 autoscaler decision trace — observe the controller against a scripted workload (cap 16)
+
+  step | demand (in+q, trend) | action  | current→target
+  -----|----------------------|---------|---------------
+     0 |    0+2, trend   0.5 | prewarm | 0→3
+     1 |    2+3, trend   0.8 | grow    | 3→6
+     2 |    5+3, trend   0.3 | grow    | 6→9
+     3 |    8+0, trend     0 | shrink  | 9→8
+     4 |    8+0, trend     0 | hold    | 8→8
+     5 |    3+0, trend  -0.5 | shrink  | 8→3
+     6 |    0+0, trend  -0.9 | shrink  | 3→0
+
+  prewarms: 1   shrinks: 3   reapToTarget calls: 3
+  every target == clamp(inflight + queued + speculative_slot, 0, 16); cooldown suppresses thrash.
+
+✅ B2 PASS — computed targets track demand, prewarm on cold start, shrink+reap precisely on
+   drain, hold inside cooldown, and stay within [0, cap]. Targets are sane for actuation.

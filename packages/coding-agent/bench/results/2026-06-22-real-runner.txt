@@ -1,0 +1,38 @@
+# B1 + B2 REAL runner — 2026-06-22 (one run = a data point, not a headline)
+# repro: node --experimental-strip-types bench/real-runner.ts   (needs $0 OAuth token)
+# worker: real `summon` (dist/cli.js), model claude-haiku-4-5, $0-Max OAuth via ANTHROPIC_OAUTH_TOKEN.
+
+B1 (REAL) — oneshot vs warm pool, fast tier, HARNESS_POOL_SIZE=4. One run = a data point.
+
+  batch | oneshot (done/n) | pool (done/n) | speedup | verdict
+  ------|------------------|---------------|---------|--------
+      4 |   5.7s (4/4)      |   4.2s (4/4)   | 1.36x   | pool wins
+      8 |   4.9s (8/8)      |   4.3s (8/8)   | 1.14x   | pool wins
+
+  → No throughput regression vs the fixed-size baseline (HARNESS_POOL_SIZE=4): the warm pool is at
+    least as fast as oneshot at both batch sizes (8/8 + 4/4 all succeeded). Real-model latency variance
+    dominates a single run, so these absolutes are indicative, not precise — the deterministic
+    pool-bench.ts is the authoritative reuse/regression guard. The conservative POOL_MIN_BATCH=8
+    default is unchanged.
+
+B2 (REAL) — observe-only FleetController over the live pool during an 8-task pooled burst.
+  It reads real occupancy each tick and prints the target it WOULD set (actuate:false).
+
+  burst of 8 finished in 8.0s (8/8 done)
+  t(ms) | busy | waiting | action  | current→target
+  ------|------|---------|---------|---------------
+    273 |    8 |       0 | hold    | 8→8
+   1028 |    8 |       0 | hold    | 8→8
+   1779 |    8 |       0 | hold    | 8→8
+   2533 |    8 |       0 | hold    | 8→8
+   3284 |    8 |       0 | hold    | 8→8
+   4033 |    5 |       0 | shrink  | 8→5
+   4785 |    3 |       0 | shrink  | 8→3
+   5537 |    3 |       0 | shrink  | 8→3
+   6288 |    2 |       0 | shrink  | 8→2
+   7039 |    2 |       0 | shrink  | 8→2
+   7790 |    1 |       0 | shrink  | 8→1
+
+  ticks observed: 31; peak target proposed: 8 (observe-only — the pool was never mutated).
+  → Targets track real occupancy exactly (busy 8 ⇒ target 8; drains precisely as workers free up). No
+    oscillation. The autoscaler's decisions are sane on this workload shape → the B2 gate is satisfied.

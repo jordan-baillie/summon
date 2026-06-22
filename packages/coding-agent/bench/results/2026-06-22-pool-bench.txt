@@ -1,0 +1,19 @@
+# B1 deterministic pool-mechanics guard — 2026-06-22
+# repro: node --experimental-strip-types bench/pool-bench.ts
+
+B1 pool transport bench — worker creations (cold starts) by batch, working set = 4
+
+  batch | oneshot | fixed{4} | collapse{4,4,4} | elastic{0,8,t4} | pool savings vs oneshot
+  ------|---------|----------|-----------------|-----------------|------------------------
+      4 |       4 |        4 |               4 |               4 | 0% fewer cold starts
+      8 |       8 |        4 |               4 |               4 | 50% fewer cold starts
+     16 |      16 |        4 |               4 |               4 | 75% fewer cold starts
+     32 |      32 |        4 |               4 |               4 | 88% fewer cold starts
+
+  elastic under full-wave pressure (width=max=8): 8 creations (grew past target 4, ≤ max 8)
+
+  POOL_MIN_BATCH=8 rationale: at batch 4 the pool ties oneshot (4=4, no reuse); at batch ≥ 8 it
+  reuses the warm working set across waves, cutting cold starts 50%+ — the documented win.
+
+✅ B1 PASS — elastic pool matches the fixed-size baseline (collapse identity) and amortizes
+   cold-start across waves; no transport regression. Precise shrink (A7) verified.

@@ -541,7 +541,25 @@ CLI for Claude."*) and the fail-closed `assertSpawnAuth`. So $0-Max OAuth routin
 single-sourced** — a new tool cannot bypass it. Forced-subscription deployments set
 `SUMMON_FORCE_OAUTH_ROUTING=1` to eject any `ANTHROPIC_API_KEY` and fail closed if one survives.
 
-**Still pending (process, not code) — must precede any default-on:** B1 re-run the pool bench
-(`bench/THRESHOLD-SWEEP`) after the acquire/transport changes; B2 run `HARNESS_AUTOSCALE=1`
-(observe-only) on a real workload and confirm sane targets before `HARNESS_AUTOSCALE_ACT=1`. B3 holds:
-nothing is default-on.
+### Validation gate — B1 / B2 done, B3 decision (2026-06-22)
+
+The referenced `bench/THRESHOLD-SWEEP` file never existed (cited only in comments). Structural fix: a
+committed, repeatable benchmark suite under `packages/coding-agent/bench/` (see its `README.md`) with
+two layers — deterministic guards (CI-safe, exit non-zero on regression, wired into `npm run bench` /
+`npm test`) and a real `$0`-OAuth wall-clock runner. Recorded results in `bench/results/2026-06-22-*`.
+
+- **B1 (pool regression) — PASS.** `pool-bench.ts`: fixed band creates exactly N workers across waves
+  (perfect reuse); `{min:N,max:N,target:N}` is byte-identical to `{size:N}` (collapse identity); at
+  batch ≥ 2× working set the pool cuts cold starts 50%/75%/88% at 8/16/32 (the `POOL_MIN_BATCH=8`
+  rationale, reproduced); elastic grows toward `max` under pressure but never past it; `reapToTarget`
+  precise. Real runner (haiku, `HARNESS_POOL_SIZE=4`): warm pool ≥ oneshot at batch 4 (1.36×) and 8
+  (1.14×), 12/12 done — **no throughput regression** vs the fixed-size baseline.
+- **B2 (observe-only telemetry) — PASS.** `autoscale-bench.ts`: every target == `clamp(inflight +
+  queued + speculative_slot, 0, cap)`, prewarm on cold start, precise shrink+reap on drain, cooldown
+  suppresses thrash. Real observe-only run over the live pool: targets tracked actual occupancy
+  (busy 8 ⇒ target 8, drained precisely), no oscillation.
+- **B3 — defaults stay OFF.** The gate is satisfied, but per the operator directive a single real run
+  is a data point, not a mandate; flipping any flag to default-on is a **separate explicit decision**,
+  not taken here. Recommended graduation path once an operator signs off: `HARNESS_SCALE=auto` (visual)
+  → `HARNESS_AUTOSCALE=1` (observe-only on the operator's real workload) → `HARNESS_AUTOSCALE_ACT=1`.
+  Nothing in this change enables any of them by default.

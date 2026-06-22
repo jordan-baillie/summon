@@ -29,8 +29,10 @@
 		"clean": "shx rm -rf dist",
 		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js && npm run copy-assets",
 		"copy-assets": "shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/ && shx mkdir -p dist/builtin/harness && shx cp -r src/builtin/harness/agents dist/builtin/harness/ && shx cp -r src/builtin/harness/teams dist/builtin/harness/ && shx cp -r src/builtin/harness/blueprints dist/builtin/harness/",
-		"test": "vitest --run && npm run test:harness",
+		"test": "vitest --run && npm run test:harness && npm run bench",
 		"test:harness": "node --experimental-strip-types --test \"src/builtin/harness/test/*.test.ts\"",
+		"bench": "node --experimental-strip-types bench/pool-bench.ts && node --experimental-strip-types bench/autoscale-bench.ts",
+		"bench:real": "node --experimental-strip-types bench/real-runner.ts",
 		"shrinkwrap": "node ../../scripts/generate-coding-agent-shrinkwrap.mjs",
 		"prepublishOnly": "npm run clean && npm run build && npm run shrinkwrap"
 	},
