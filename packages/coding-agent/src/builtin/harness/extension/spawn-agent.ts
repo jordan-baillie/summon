@@ -542,6 +542,19 @@ export default function harness(summon: ExtensionAPI) {
 				return runOne(judgeAgent, quorumPrompt(p.prompt, survivors), `${taskId}-judge`, ctx);
 			};
 			const outcome = await runQuorum(candidates, judge, { maxN: N });
+			// Surface the verdict on the live dashboard bus (Bet 1) — not only the durable journal below.
+			summon.events?.emit?.("agent-event", {
+				t: "quorum",
+				id: taskId,
+				agent: p.agent,
+				agreement: outcome.agreement,
+				decidedBy: outcome.decidedBy,
+				groupSize: outcome.groupSize,
+				survivors: outcome.survivors.length,
+				candidates: N,
+				won: !!outcome.winner,
+				ts: Date.now(),
+			});
 			if (session) {
 				session.append("quorum_decided", {
 					node: taskId,
@@ -641,6 +654,19 @@ export default function harness(summon: ExtensionAPI) {
 					const judge = (survivors: { artifact_excerpt?: string }[]) =>
 						runOne("reviewer", quorumPrompt(prompt, survivors), `${node.id}-judge`, ctx);
 					const outcome = await runQuorum(candidates, judge, { maxN: N });
+					// Best-of verdict onto the live dashboard bus (Bet 1), mirroring spawn_quorum.
+					summon.events?.emit?.("agent-event", {
+						t: "quorum",
+						id: node.id,
+						agent,
+						agreement: outcome.agreement,
+						decidedBy: outcome.decidedBy,
+						groupSize: outcome.groupSize,
+						survivors: outcome.survivors.length,
+						candidates: N,
+						won: !!outcome.winner,
+						ts: Date.now(),
+					});
 					return { ok: !!outcome.winner, output: outcome.winner?.artifact_excerpt ?? "", result: outcome };
 				}
 				const r = await runOne(agent, prompt, node.id, ctx, node.verify);

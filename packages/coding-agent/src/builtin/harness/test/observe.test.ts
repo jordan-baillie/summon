@@ -532,3 +532,111 @@ test("idea7: zoned layout is jitter-safe — byte-stable per (vm, frame)", () =>
 	]);
 	assert.deepEqual(renderWidget(vm, 120, 2, "command-bridge"), renderWidget(vm, 120, 2, "command-bridge"));
 });
+
+// ── Bet 1: quorum-verdict telemetry on the live board (fugu transparency invariant) ──────────────
+
+const quorumEvt = (over: Record<string, unknown> = {}) => ({
+	t: "quorum",
+	id: "q",
+	agent: "scout",
+	agreement: "majority",
+	decidedBy: "vote",
+	survivors: 4,
+	candidates: 6,
+	won: true,
+	groupSize: 4,
+	ts: 3,
+	...over,
+});
+
+test("bet1: reduce records the latest quorum verdict", () => {
+	const vm = feed([quorumEvt()]);
+	assert.deepEqual(vm.quorum, {
+		agreement: "majority",
+		decidedBy: "vote",
+		survivors: 4,
+		candidates: 6,
+		won: true,
+		groupSize: 4,
+		agent: "scout",
+	});
+});
+
+test("bet1: a quorum verdict does NOT make isAnimating true (jitter invariant)", () => {
+	const vm = feed([quorumEvt({ agreement: "judged", decidedBy: "judge" })]);
+	assert.equal(isAnimating(vm), false, "a verdict with no running agent must still quiesce");
+});
+
+test("bet1: command-bridge renders the [VOTE] verdict cell with the ✓ winner marker", () => {
+	const vm = feed([
+		{ t: "spawned", id: "q#0", agent: "scout", model: "fast", ts: 1 },
+		{ t: "done", id: "q#0", status: "done", ts: 2 },
+		quorumEvt(),
+	]);
+	const vote = renderWidget(vm, 72, 0, "command-bridge")
+		.map(stripAnsi)
+		.find((l) => l.includes("[VOTE]"));
+	assert.ok(vote, "[VOTE] cell present");
+	assert.ok(vote!.includes("majority/vote"), "verdict shown");
+	assert.ok(vote!.includes("4/6"), "survivors/candidates shown");
+	assert.ok(vote!.includes("✓"), "won marker");
+});
+
+test("bet1: a failed quorum shows the ✗ marker", () => {
+	const vm = feed([
+		{ t: "spawned", id: "q#0", agent: "scout", model: "fast", ts: 1 },
+		{ t: "done", id: "q#0", status: "failed", ts: 2 },
+		quorumEvt({
+			agreement: "none",
+			decidedBy: "no-survivor",
+			survivors: 0,
+			candidates: 3,
+			won: false,
+			groupSize: undefined,
+		}),
+	]);
+	const vote = renderWidget(vm, 72, 0, "command-bridge")
+		.map(stripAnsi)
+		.find((l) => l.includes("[VOTE]"));
+	assert.ok(vote?.includes("✗"), "lost marker");
+});
+
+test("bet1: [VOTE] keeps the stacked rectangle exactly W", () => {
+	const vm = feed([
+		{ t: "spawned", id: "q#0", agent: "scout", model: "fast", ts: 1 },
+		{ t: "done", id: "q#0", status: "done", ts: 2 },
+		quorumEvt(),
+	]);
+	for (const W of [46, 72, 100]) {
+		const framed = renderWidget(vm, W, 0, "command-bridge")
+			.map(stripAnsi)
+			.filter((l) => /^[┌│├╞└]/.test(l));
+		const widths = new Set(framed.map((l) => [...l].length));
+		assert.equal(widths.size, 1, `W=${W}: one width; got ${[...widths].join(",")}`);
+		assert.equal([...widths][0], W);
+	}
+});
+
+test("bet1: zoned STATUS column carries [VOTE] and stays exactly W", () => {
+	const vm = feed([
+		{ t: "spawned", id: "q#0", agent: "scout", model: "fast", load_pct: 40, window_pct: 20, ts: 1 },
+		{ t: "done", id: "q#0", status: "done", ts: 2 },
+		quorumEvt({ survivors: 3, candidates: 5, groupSize: 3 }),
+	]);
+	const lines = renderWidget(vm, 120, 0, "command-bridge").map(stripAnsi);
+	assert.ok(lines.join("\n").includes("[VOTE]"), "[VOTE] in zoned STATUS column");
+	const framed = lines.filter((l) => /^[┌│├└]/.test(l));
+	const widths = new Set(framed.map((l) => [...l].length));
+	assert.equal(widths.size, 1, `zoned rows share one width; got ${[...widths].join(",")}`);
+	assert.equal([...widths][0], 120);
+});
+
+test("bet1: the panel layout surfaces the verdict too", () => {
+	const vm = feed([
+		{ t: "spawned", id: "q#0", agent: "scout", model: "fast", ts: 1 },
+		{ t: "done", id: "q#0", status: "done", ts: 2 },
+		quorumEvt(),
+	]);
+	const joined = renderWidget(vm, 72, 0, "panel").map(stripAnsi).join("\n");
+	assert.ok(joined.includes("vote ") && joined.includes("majority/vote"), "panel shows the vote line");
+});

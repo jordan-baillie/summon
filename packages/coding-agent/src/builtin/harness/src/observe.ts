@@ -40,6 +40,18 @@ export interface ViewModel {
 	shed?: { count: number; from?: string; to?: string };
 	// Summoning fan-out (A2): a running tally of spawns + the last spawn ts, driving the header streak.
 	burst?: { count: number; lastAt: number };
+	// Latest quorum / best-of VERDICT (Bet 1, fugu transparency invariant): the decision used to reach
+	// only the disk journal, never the live dashboard. Additive + optional so a missing field blanks
+	// nothing; carries NO running agent, so isAnimating is unaffected (jitter invariant preserved).
+	quorum?: {
+		agreement: string;
+		decidedBy: string;
+		survivors: number;
+		candidates: number;
+		won: boolean;
+		groupSize?: number;
+		agent?: string;
+	};
 }
 
 export const emptyVM = (): ViewModel => ({ agents: new Map(), startedAt: Date.now() });
@@ -106,6 +118,18 @@ export function reduce(vm: ViewModel, e: any): void {
 					target: Number(t.target) || 0,
 					action: String(t.action ?? ""),
 				}));
+			break;
+		case "quorum":
+			// Record the latest fan-out verdict. No agent mutation ⇒ isAnimating is untouched.
+			vm.quorum = {
+				agreement: String(e.agreement ?? ""),
+				decidedBy: String(e.decidedBy ?? ""),
+				survivors: Number(e.survivors) || 0,
+				candidates: Number(e.candidates) || 0,
+				won: e.won === true,
+				groupSize: typeof e.groupSize === "number" ? e.groupSize : undefined,
+				agent: typeof e.agent === "string" ? e.agent : undefined,
+			};
 			break;
 		case "tool": {
 			const a = vm.agents.get(e.id);
@@ -399,6 +423,17 @@ function tierMix(agents: AgentView[], avail: number): { vis: number; str: string
 	return { vis: barW + 2 + legend.length, str: `${bar}${fg(PAL.muted, `  ${legend}`)}` };
 }
 
+// The latest quorum verdict, rendered as coloured spans (without a label cell). Returns vis so callers
+// pad framed rows exactly. e.g. "majority/vote 4/6 ×4 ✓" — green ✓ if a winner was chosen, else red ✗.
+function quorumLine(q: NonNullable<ViewModel["quorum"]>): { vis: number; str: string } {
+	const verdict = `${q.agreement}/${q.decidedBy}`;
+	const tally = ` ${q.survivors}/${q.candidates}`;
+	const grp = q.groupSize ? ` ×${q.groupSize}` : "";
+	const mark = q.won ? " ✓" : " ✗";
+	const str = fg(PAL.muted, verdict) + fg(PAL.text, tally + grp) + fg(q.won ? PAL.done : PAL.fail, mark);
+	return { vis: verdict.length + tally.length + grp.length + mark.length, str };
+}
+
 // drill-in detail (breadcrumb + failure reason + tool timeline) — shared by every layout.
 function drillIn(vm: ViewModel): string[] {
 	if (vm.expanded === undefined || !vm.agents.has(vm.expanded)) return [];
@@ -469,6 +504,10 @@ function renderPanel(vm: ViewModel, W: number, frame: number, c: Counts): string
 			line += fg(PAL.muted, "   shed ") + fg(PAL.fail, `${vm.shed.count}↓ ${tag}`);
 		}
 		L.push(line);
+	}
+	if (vm.quorum) {
+		const q = quorumLine(vm.quorum);
+		L.push(fg(PAL.muted, "vote ") + q.str);
 	}
 	if (total === 0) return L; // drill-in pinned but no agents yet: header (+ gauge) only
 	const title = "agents";
@@ -611,6 +650,12 @@ function renderCommandBridge(vm: ViewModel, W: number, frame: number, c: Counts)
 	if (c.run > 0 && inner - 7 >= 10) {
 		const mix = tierMix([...vm.agents.values()], inner - 7);
 		if (mix.vis > 0) L.push(body(6 + mix.vis, `${fg(ACC, "[MIX] ")}${mix.str}`));
+	}
+	// [VOTE] latest quorum / best-of verdict (Bet 1) — the decision that previously reached only the
+	// disk journal, now on the live board.
+	if (vm.quorum) {
+		const q = quorumLine(vm.quorum);
+		if (7 + q.vis <= inner - 1) L.push(body(7 + q.vis, `${fg(ACC, "[VOTE] ")}${q.str}`));
 	}
 	// [AGENTS] register
 	L.push(
@@ -801,6 +846,10 @@ function renderCommandBridgeZoned(vm: ViewModel, W: number, frame: number, c: Co
 	if (c.run > 0) {
 		const mix = tierMix([...vm.agents.values()], rw);
 		if (mix.vis > 0) rightCells.push(pad(mix.str, mix.vis, rw));
+	}
+	if (vm.quorum) {
+		const q = quorumLine(vm.quorum);
+		if (7 + q.vis <= rw) rightCells.push(pad(`${fg(ACC, "[VOTE] ")}${q.str}`, 7 + q.vis, rw));
 	}
 	if (g.queued > 0 || (vm.shed && vm.shed.count > 0)) {
 		let s = "";
