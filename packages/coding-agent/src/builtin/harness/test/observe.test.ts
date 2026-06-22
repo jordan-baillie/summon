@@ -429,3 +429,106 @@ test("idea1-5: the rectangle stays exactly W with pulse + sparkline + collapsed 
 		assert.equal([...widths][0], W, `W=${W}: rows fill the width`);
 	}
 });
+
+// ── TUI iteration II: breadcrumb + reason / tier-mix / zoned wide layout (ideas 6–8) ────────────
+
+test("idea6: reduce captures a failure reason off the done event (whitespace-collapsed)", () => {
+	const vm = feed([
+		{ t: "spawned", id: "a", agent: "scout", model: "fast", ts: 1 },
+		{ t: "done", id: "a", status: "failed", error: "boom: it   broke\n  badly", ts: 2 },
+	]);
+	assert.equal(vm.agents.get("a")?.reason, "boom: it broke badly");
+});
+
+test("idea6: drill-in shows the SUMMON breadcrumb and surfaces the failure reason", () => {
+	const vm = feed([
+		{ t: "spawned", id: "a", agent: "scout", model: "fast", ts: 1 },
+		{ t: "done", id: "a", status: "contract_violation", error: "missing: plan", ts: 2 },
+	]);
+	setExpanded(vm, "a");
+	const out = renderWidget(vm, 72, 0, "command-bridge").map(stripAnsi).join("\n");
+	assert.ok(out.includes("SUMMON › scout"), "breadcrumb path present");
+	assert.ok(out.includes("missing: plan"), "captured reason surfaced");
+});
+
+test("idea6: drill-in reason falls back to the status when none was emitted", () => {
+	const vm = feed([
+		{ t: "spawned", id: "a", agent: "scout", model: "fast", ts: 1 },
+		{ t: "done", id: "a", status: "timeout", ts: 2 },
+	]);
+	setExpanded(vm, "a");
+	const out = renderWidget(vm, 72, 0, "command-bridge").map(stripAnsi).join("\n");
+	assert.ok(out.includes("✗ timeout"), "status used as the reason when no detail");
+});
+
+test("idea8: [MIX] tier-weighting row appears for running agents of mixed tiers", () => {
+	const vm = feed([
+		{ t: "spawned", id: "a", agent: "scout", model: "fast", ts: 1 },
+		{ t: "spawned", id: "b", agent: "builder", model: "frontier", ts: 1 },
+	]);
+	const mix = renderWidget(vm, 72, 0, "command-bridge")
+		.map(stripAnsi)
+		.find((l) => l.includes("[MIX]"));
+	assert.ok(mix, "[MIX] row present while agents run");
+	assert.ok(mix!.includes("fast 1") && mix!.includes("frontier 1"), "per-tier count legend");
+	assert.ok(mix!.includes("▰"), "proportional weight bar");
+});
+
+test("idea8: [MIX] row disappears once nothing is running", () => {
+	const vm = feed([
+		{ t: "spawned", id: "a", agent: "scout", model: "fast", ts: 1 },
+		{ t: "done", id: "a", status: "done", ts: 2 },
+	]);
+	assert.ok(
+		!renderWidget(vm, 72, 0, "command-bridge")
+			.map(stripAnsi)
+			.some((l) => l.includes("[MIX]")),
+		"MIX hidden when idle",
+	);
+});
+
+test("idea7: wide width (≥110) splits command-bridge into AGENTS | STATUS columns", () => {
+	const vm = feed([
+		{ t: "spawned", id: "a", agent: "scout", model: "fast", load_pct: 40, window_pct: 20, ts: 1 },
+		{ t: "spawned", id: "b", agent: "builder", model: "frontier", load_pct: 60, window_pct: 30, ts: 1 },
+	]);
+	const joined = renderWidget(vm, 120, 0, "command-bridge").map(stripAnsi).join("\n");
+	assert.ok(joined.includes("[AGENTS]") && joined.includes("[STATUS]"), "two-column split header");
+	assert.ok(joined.includes("scout") && joined.includes("LOAD"), "agents left, gov right");
+});
+
+test("idea7: at <110 command-bridge stays single-column (no STATUS split)", () => {
+	const vm = feed([{ t: "spawned", id: "a", agent: "scout", model: "fast", ts: 1 }]);
+	const joined = renderWidget(vm, 100, 0, "command-bridge").map(stripAnsi).join("\n");
+	assert.ok(!joined.includes("[STATUS]"), "stacked layout at 100 cols");
+});
+
+test("idea7: zoned rows are exactly W columns across wide widths", () => {
+	const evs: any[] = [
+		{ t: "spawned", id: "r", agent: "builder", model: "frontier", load_pct: 50, window_pct: 25, ts: 1 },
+		{ t: "scaling", id: "r", load_pct: 80, window_pct: 60 },
+		{ t: "spawned", id: "s", agent: "scout", model: "fast", ts: 2 },
+		{ t: "autoscale", id: "fleet", ticks: [{ bundle: "scout", current: 1, target: 3, action: "grow" }] },
+	];
+	for (let i = 0; i < 4; i++) {
+		evs.push({ t: "spawned", id: `f${i}`, agent: "probe", model: "standard", ts: i });
+		evs.push({ t: "done", id: `f${i}`, status: "failed", ts: i + 1 });
+	}
+	const vm = feed(evs);
+	for (const W of [110, 115, 120]) {
+		const framed = renderWidget(vm, W, 0, "command-bridge")
+			.map(stripAnsi)
+			.filter((l) => /^[┌│├└]/.test(l));
+		const widths = new Set(framed.map((l) => [...l].length));
+		assert.equal(widths.size, 1, `W=${W}: zoned rows share one width; got ${[...widths].join(",")}`);
+		assert.equal([...widths][0], W, `W=${W}: zoned rows fill the width`);
+	}
+});
+
+test("idea7: zoned layout is jitter-safe — byte-stable per (vm, frame)", () => {
+	const vm = feed([
+		{ t: "spawned", id: "a", agent: "scout", model: "fast", load_pct: 40, window_pct: 20, ts: 1 },
+		{ t: "scaling", id: "a", load_pct: 70, window_pct: 50 },
+	]);
+	assert.deepEqual(renderWidget(vm, 120, 2, "command-bridge"), renderWidget(vm, 120, 2, "command-bridge"));
+});

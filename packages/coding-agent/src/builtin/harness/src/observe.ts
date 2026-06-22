@@ -11,6 +11,9 @@ export interface AgentView {
 	startedAt: number;
 	endedAt?: number;
 	verify?: boolean;
+	// Why a run ended (e.g. the failure error / contract miss), captured defensively off the `done`
+	// event when the emitter carries it. Surfaced in the drill-in so a failure says more than its status.
+	reason?: string;
 	timeline: { tool: string; startedAt: number; endedAt?: number }[];
 }
 // One autoscaler decision surfaced for the live fleet panel (from the 'autoscale' agent-event).
@@ -126,6 +129,9 @@ export function reduce(vm: ViewModel, e: any): void {
 				a.endedAt = e.ts ?? Date.now();
 				a.verify = e.verify;
 				a.tool = undefined;
+				// Capture a human reason if the emitter carries one (error string / contract miss array).
+				const reason = typeof e.error === "string" ? e.error : typeof e.reason === "string" ? e.reason : undefined;
+				if (reason) a.reason = reason.replace(/\s+/g, " ").trim();
 			}
 			captureGov(vm, e);
 			break;
@@ -200,7 +206,15 @@ function gradText(s: string, phase = 0): string {
 }
 const glyph = (s: AgentView["status"]) => (s === "running" ? "▸" : s === "done" ? "✓" : "✗");
 const statusCol = (s: AgentView["status"]) => (s === "running" ? PAL.run : s === "done" ? PAL.done : PAL.fail);
-const modelCol = (m: string) => (m.includes("opus") ? PAL.opus : m.includes("sonnet") ? PAL.son : PAL.hai);
+// Agent events carry the model_tier name ("fast"/"standard"/"frontier"); older paths may carry a raw
+// model id. Colour by tier first, falling back to id substrings, so the chip is always tier-coded.
+const modelCol = (m: string) =>
+	m.includes("opus") || m === "frontier" ? PAL.opus : m.includes("sonnet") || m === "standard" ? PAL.son : PAL.hai;
+// Mirror of core.ts WEIGHT — the governor's per-tier concurrency cost. A display-only copy keeps
+// observe.ts dependency-free (it must unit-test offline). Drives the in-flight tier-mix bar (idea 8).
+const TIER_WEIGHT: Record<string, number> = { fast: 1, standard: 2, frontier: 4 };
+const TIER_ORDER = ["frontier", "standard", "fast"] as const;
+const tierCol = (t: string) => (t === "frontier" ? PAL.opus : t === "standard" ? PAL.son : PAL.hai);
 const dur = (ms: number) => {
 	const s = Math.max(0, Math.round(ms / 1000));
 	return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
@@ -312,6 +326,7 @@ function frameRow(W: number, left: [string, string][], right: string, rightCol: 
 export type DashboardStyle = "panel" | "command-bridge";
 export const DASHBOARD_STYLES: DashboardStyle[] = ["panel", "command-bridge"];
 const ACC = "52;225;244"; // command-bridge cyan accent for [LABEL] cells
+const ZONE_MIN = 110; // at/above this width, command-bridge splits into AGENTS | STATUS columns (idea 7)
 type Counts = { total: number; run: number; ok: number; bad: number };
 
 // A displayed register row: a representative agent + how many identical ones it stands for.
@@ -352,15 +367,58 @@ function fleetPulse(agents: AgentView[], maxW: number): { vis: number; str: stri
 	const str = lead + shown.map((a) => fg(statusCol(a.status), "●")).join("");
 	return { vis: (overflow ? 1 : 0) + shown.length, str };
 }
+// In-flight tier mix (idea 8 / canvas-tui "weighting"): a proportional bar of running WEIGHT by model
+// tier — the governor's currency made visible — with a per-tier agent-count legend. Always fits within
+// `avail` columns (bar ≤ 12 cells, legend truncated if needed) and returns vis for exact padding.
+function tierMix(agents: AgentView[], avail: number): { vis: number; str: string } {
+	const wByTier = new Map<string, number>();
+	const nByTier = new Map<string, number>();
+	let total = 0;
+	for (const a of agents) {
+		if (a.status !== "running") continue;
+		const tier = a.model in TIER_WEIGHT ? a.model : "fast";
+		wByTier.set(tier, (wByTier.get(tier) ?? 0) + TIER_WEIGHT[tier]);
+		nByTier.set(tier, (nByTier.get(tier) ?? 0) + 1);
+		total += TIER_WEIGHT[tier];
+	}
+	if (total === 0) return { vis: 0, str: "" };
+	const tiers = TIER_ORDER.filter((t) => (wByTier.get(t) ?? 0) > 0);
+	let legend = tiers.map((t) => `${t} ${nByTier.get(t)}`).join(" ");
+	let barW = Math.min(12, avail - 2 - legend.length);
+	if (barW < 3) {
+		barW = 3;
+		legend = trunc(legend, Math.max(0, avail - 2 - barW));
+	}
+	// largest-remainder apportionment so the coloured cells always sum to exactly barW.
+	const raw = tiers.map((t) => ((wByTier.get(t) ?? 0) / total) * barW);
+	const cells = raw.map((x) => Math.floor(x));
+	let used = cells.reduce((s, x) => s + x, 0);
+	const rema = raw.map((x, i) => [x - Math.floor(x), i] as [number, number]).sort((a, b) => b[0] - a[0]);
+	for (let k = 0; used < barW && k < rema.length; k++, used++) cells[rema[k][1]]++;
+	const bar = tiers.map((t, i) => fg(tierCol(t), "▰".repeat(cells[i]))).join("");
+	return { vis: barW + 2 + legend.length, str: `${bar}${fg(PAL.muted, `  ${legend}`)}` };
+}
 
-// drill-in detail (the selected agent's tool timeline) — shared by every layout.
+// drill-in detail (breadcrumb + failure reason + tool timeline) — shared by every layout.
 function drillIn(vm: ViewModel): string[] {
 	if (vm.expanded === undefined || !vm.agents.has(vm.expanded)) return [];
 	const a = vm.agents.get(vm.expanded)!;
-	const L: string[] = [fg(PAL.border, "  ▾ ") + fg(PAL.son, a.agent) + fg(PAL.muted, ` ‹${a.model}› ${a.status}`)];
+	const bad = a.status !== "running" && a.status !== "done";
+	// breadcrumb: SUMMON › <agent> ‹tier› › <timeline | why> (idea 6, k9s-style path).
+	const crumb =
+		fg(PAL.border, "  ▾ ") +
+		fg(PAL.muted, "SUMMON ") +
+		fg(PAL.border, "› ") +
+		fg(PAL.son, a.agent) +
+		fg(modelCol(a.model), ` ‹${a.model}› `) +
+		fg(PAL.border, "› ") +
+		fg(bad ? PAL.fail : PAL.muted, bad ? "why" : "timeline");
+	const L: string[] = [crumb];
+	// failure reason: the captured error if the emitter sent one, else the status — so a failure says why.
+	if (bad) L.push(fg(PAL.fail, `    ✗ ${trunc(a.reason ?? a.status, 72)}`));
 	const tl = a.timeline.slice(-10);
 	if (tl.length === 0) {
-		L.push(fg(PAL.muted, "    (no tool activity yet)"));
+		if (!bad) L.push(fg(PAL.muted, "    (no tool activity yet)"));
 		return L;
 	}
 	for (const e of tl) {
@@ -378,8 +436,11 @@ export function renderWidget(vm: ViewModel, width: number = 72, frame = 0, style
 	const c = counts(vm);
 	// Idle (nothing delegated): render NOTHING so the widget takes zero space and the prompt stays clean.
 	if (c.total === 0 && vm.expanded === undefined) return [];
-	const W = Math.max(46, Math.min(typeof width === "number" && width > 0 ? width : 72, 100));
-	return style === "command-bridge" ? renderCommandBridge(vm, W, frame, c) : renderPanel(vm, W, frame, c);
+	const W = Math.max(46, Math.min(typeof width === "number" && width > 0 ? width : 72, 120));
+	if (style === "command-bridge") {
+		return W >= ZONE_MIN ? renderCommandBridgeZoned(vm, W, frame, c) : renderCommandBridge(vm, W, frame, c);
+	}
+	return renderPanel(vm, W, frame, c);
 }
 
 // ── layout "panel": the original neon agent panel (24-bit colour) ─────────────
@@ -501,7 +562,7 @@ function renderCommandBridge(vm: ViewModel, W: number, frame: number, c: Counts)
 	);
 	// fleet pulse (k9s): one status dot per agent — whole-fleet health at a glance, even past the cap.
 	if (c.total > 0) {
-		const p = fleetPulse([...vm.agents.values()], inner);
+		const p = fleetPulse([...vm.agents.values()], inner - 1); // -1 so the row always keeps a pad column
 		L.push(body(p.vis, p.str));
 	}
 	// [GOV] segmented load/window bars
@@ -545,6 +606,11 @@ function renderCommandBridge(vm: ViewModel, W: number, frame: number, c: Counts)
 			vis += pre.length + 5 + s.length;
 		}
 		if (vis > 0) L.push(body(vis, content));
+	}
+	// [MIX] in-flight tier weighting (idea 8) — only while agents run and there's room for a real bar.
+	if (c.run > 0 && inner - 7 >= 10) {
+		const mix = tierMix([...vm.agents.values()], inner - 7);
+		if (mix.vis > 0) L.push(body(6 + mix.vis, `${fg(ACC, "[MIX] ")}${mix.str}`));
 	}
 	// [AGENTS] register
 	L.push(
@@ -615,6 +681,167 @@ function renderCommandBridge(vm: ViewModel, W: number, frame: number, c: Counts)
 			"┘",
 			"─",
 		),
+	);
+	L.push(...drillIn(vm));
+	return L;
+}
+
+// One fully-padded agent register cell, EXACTLY `width` visible columns (zoned layout's left column).
+function agentCell(a: AgentView, count: number, frame: number, width: number): string {
+	const running = a.status === "running";
+	const okk = a.status === "done";
+	const gl = running ? SPIN[frame % SPIN.length] : glyph(a.status);
+	const model = `‹${a.model.slice(0, 5)}›`;
+	const right = `${running ? "RUN" : okk ? "DONE" : "FAIL"} ${dur((a.endedAt ?? Date.now()) - a.startedAt)}`;
+	const name = a.agent.slice(0, 8).padEnd(8);
+	const leftFixed = 12 + model.length;
+	const room = Math.max(3, width - leftFixed - (right.length + 1));
+	let act = running ? (a.tool ?? "weaving") : okk ? "" : a.status;
+	if (count > 1) act = act ? `${act} ×${count}` : `×${count}`;
+	if (act.length > room) act = trunc(act, room);
+	const gap = Math.max(1, width - leftFixed - act.length - right.length);
+	const actCol = running ? PAL.text : okk ? PAL.muted : PAL.fail;
+	const rcol = running ? PAL.run : okk ? PAL.done : PAL.fail;
+	return (
+		fg(statusCol(a.status), `${gl} `) +
+		fg(PAL.text, `${name} `) +
+		fg(modelCol(a.model), `${model} `) +
+		fg(actCol, act) +
+		" ".repeat(gap) +
+		fg(rcol, right)
+	);
+}
+
+// ── layout "command-bridge", ZONED (idea 7) ───────────────────────────────────
+// At wide widths the console splits into two columns — AGENTS on the left, STATUS (gov / trend / mix /
+// fleet) on the right — like a btop preset / k9s split. Full-width rows (top rail, pulse, footer) span
+// both; the ┬/┴ junctions align with the body divider at column lw+3. Every row is EXACTLY W columns.
+function renderCommandBridgeZoned(vm: ViewModel, W: number, frame: number, c: Counts): string[] {
+	const BR = PAL.border;
+	const lw = Math.floor((W - 7) * 0.6); // AGENTS column width
+	const rw = W - 7 - lw; // STATUS column width
+	const L: string[] = [];
+	const elapsed = dur(Date.now() - vm.startedAt);
+	const pad = (str: string, vis: number, w: number) => str + " ".repeat(Math.max(0, w - vis));
+	const rule = (segs: [string, string][], close: string, fill: string): string => {
+		let plain = 0;
+		let out = "";
+		for (const [t, col] of segs) {
+			out += fg(col, t);
+			plain += t.length;
+		}
+		return out + fg(BR, fill.repeat(Math.max(0, W - 1 - plain)) + close);
+	};
+
+	// top rail (full width)
+	L.push(
+		rule(
+			[
+				["┌─", BR],
+				["[SUMMON]", ACC],
+				["─", BR],
+				["[ ", PAL.muted],
+				[`▸${c.run}`, PAL.run],
+				[` ✓${c.ok}`, PAL.done],
+				[` ✗${c.bad}`, PAL.fail],
+				[` · ${elapsed} ]`, PAL.muted],
+			],
+			"┐",
+			"─",
+		),
+	);
+	// pulse (full width)
+	if (c.total > 0) {
+		const p = fleetPulse([...vm.agents.values()], W - 5);
+		L.push(fg(BR, "│ ") + p.str + " ".repeat(Math.max(1, W - 4 - p.vis)) + fg(BR, " │"));
+	}
+	// split header: ├[AGENTS]══┬[STATUS]══┤  (┬ aligned with the body divider at column lw+3)
+	L.push(
+		fg(BR, "├") +
+			fg(ACC, "[AGENTS]") +
+			fg(BR, `${"═".repeat(Math.max(0, lw - 6))}┬`) +
+			fg(ACC, "[STATUS]") +
+			fg(BR, `${"═".repeat(Math.max(0, rw - 6))}┤`),
+	);
+
+	// ── left column: agent register ──
+	const leftCells: string[] = [];
+	if (c.total === 0) leftCells.push(pad(fg(PAL.muted, "(no contacts)"), 13, lw));
+	else
+		for (const { rep: a, count } of groupAgents([...vm.agents.values()]).slice(-14))
+			leftCells.push(agentCell(a, count, frame, lw));
+
+	// ── right column: status stack ──
+	const rightCells: string[] = [];
+	const g = vm.governor ?? { windowPct: 0, loadPct: 0, queued: 0 };
+	{
+		const lpv = ` ${g.loadPct}%`;
+		const wpv = ` ${g.windowPct}%`;
+		rightCells.push(
+			pad(
+				`${fg(PAL.muted, "LOAD ")}${gauge(g.loadPct, 8)}${fg(PAL.text, lpv)}${fg(PAL.muted, "  WIN ")}${gauge(g.windowPct, 8)}${fg(PAL.text, wpv)}`,
+				5 + 8 + lpv.length + 6 + 8 + wpv.length,
+				rw,
+			),
+		);
+	}
+	if (vm.govHist && vm.govHist.load.length >= 2) {
+		const sw = Math.min(12, Math.floor((rw - 11) / 2));
+		if (sw >= 4) {
+			const n = Math.min(vm.govHist.load.length, sw);
+			rightCells.push(
+				pad(
+					`${fg(PAL.muted, "load ")}${spark(vm.govHist.load, sw)}${fg(PAL.muted, "  win ")}${spark(vm.govHist.win, sw)}`,
+					11 + 2 * n,
+					rw,
+				),
+			);
+		}
+	}
+	if (c.run > 0) {
+		const mix = tierMix([...vm.agents.values()], rw);
+		if (mix.vis > 0) rightCells.push(pad(mix.str, mix.vis, rw));
+	}
+	if (g.queued > 0 || (vm.shed && vm.shed.count > 0)) {
+		let s = "";
+		let vis = 0;
+		if (g.queued > 0) {
+			s += fg(PAL.muted, "QUEUE ") + fg(PAL.run, String(g.queued));
+			vis += 6 + String(g.queued).length;
+		}
+		if (vm.shed && vm.shed.count > 0) {
+			const tag = vm.shed.from && vm.shed.to ? `${vm.shed.from}→${vm.shed.to}` : "tier";
+			const pre = vis > 0 ? "  " : "";
+			const t = `${vm.shed.count}↓ ${tag}`;
+			s += fg(PAL.muted, `${pre}SHED `) + fg(PAL.fail, t);
+			vis += pre.length + 5 + t.length;
+		}
+		if (vis <= rw) rightCells.push(pad(s, vis, rw));
+	}
+	if (vm.autoscale?.length) {
+		rightCells.push(pad(fg(ACC, "FLEET"), 5, rw));
+		for (const t of vm.autoscale.slice(0, 4)) {
+			const ar = t.target > t.current ? "▲" : t.target < t.current ? "▼" : "·";
+			const txt = trunc(`${t.bundle} ${t.current}▶${t.target}${ar}`, rw);
+			rightCells.push(pad(fg(PAL.run, txt), txt.length, rw));
+		}
+	}
+
+	// ── compose the two columns row by row ──
+	const rows = Math.max(leftCells.length, rightCells.length);
+	for (let i = 0; i < rows; i++) {
+		const lc = leftCells[i] ?? " ".repeat(lw);
+		const rc = rightCells[i] ?? " ".repeat(rw);
+		L.push(fg(BR, "│ ") + lc + fg(BR, " │ ") + rc + fg(BR, " │"));
+	}
+
+	// footer with ┴ aligned at column lw+3
+	const hintFull = "‹ /harness-drill · /harness-layout · /harness-scale ›";
+	const hint = hintFull.length <= lw ? hintFull : "‹ board nominal ›";
+	L.push(
+		fg(BR, "└─ ") +
+			fg(PAL.muted, hint) +
+			fg(BR, `${"─".repeat(Math.max(0, lw - hint.length))}┴${"─".repeat(rw + 2)}┘`),
 	);
 	L.push(...drillIn(vm));
 	return L;
